@@ -307,26 +307,6 @@ static void singlevar (LexState *ls, expdesc *var) {
 }
 
 
-static void adjust_assign (LexState *ls, int nvars, int nexps, expdesc *e) {
-  FuncState *fs = ls->fs;
-  int extra = nvars - nexps;
-  if (hasmultret(e->k)) {
-    extra++;  /* includes call itself */
-    if (extra < 0) extra = 0;
-    luaK_setreturns(fs, e, extra);  /* last exp. provides the difference */
-    if (extra > 1) luaK_reserveregs(fs, extra-1);
-  }
-  else {
-    if (e->k != VVOID) luaK_exp2nextreg(fs, e);  /* close last expression */
-    if (extra > 0) {
-      int reg = fs->freereg;
-      luaK_reserveregs(fs, extra);
-      luaK_nil(fs, reg, extra);
-    }
-  }
-}
-
-
 static void enterlevel (LexState *ls) {
   lua_State *L = ls->L;
   ++L->nCcalls;
@@ -983,73 +963,6 @@ struct LHS_assign {
 };
 
 
-/*
-** check whether, in an assignment to an upvalue/local variable, the
-** upvalue/local variable is begin used in a previous assignment to a
-** table. If so, save original upvalue/local value in a safe place and
-** use this safe copy in the previous assignment.
-*/
-static void check_conflict (LexState *ls, struct LHS_assign *lh, expdesc *v) {
-  FuncState *fs = ls->fs;
-  int extra = fs->freereg;  /* eventual position to save local variable */
-  int conflict = 0;
-  for (; lh; lh = lh->prev) {  /* check all previous assignments */
-    if (lh->v.k == VINDEXED) {  /* assigning to a table? */
-      /* table is the upvalue/local being assigned now? */
-      if (lh->v.u.ind.vt == v->k && lh->v.u.ind.t == v->u.info) {
-        conflict = 1;
-        lh->v.u.ind.vt = VLOCAL;
-        lh->v.u.ind.t = extra;  /* previous assignment will use safe copy */
-      }
-      /* index is the local being assigned? (index cannot be upvalue) */
-      if (v->k == VLOCAL && lh->v.u.ind.idx == v->u.info) {
-        conflict = 1;
-        lh->v.u.ind.idx = extra;  /* previous assignment will use safe copy */
-      }
-    }
-  }
-  if (conflict) {
-    /* copy upvalue/local value to a temporary (in position 'extra') */
-    OpCode op = (v->k == VLOCAL) ? OP_MOVE : OP_GETUPVAL;
-    luaK_codeABC(fs, op, extra, v->u.info, 0);
-    luaK_reserveregs(fs, 1);
-  }
-}
-
-
-static void assignment (LexState *ls, struct LHS_assign *lh, int nvars) {
-  expdesc e;
-  check_condition(ls, vkisvar(lh->v.k), "syntax error");
-  if (testnext(ls, ',')) {  /* assignment -> ',' suffixedexp assignment */
-    struct LHS_assign nv;
-    nv.prev = lh;
-    suffixedexp(ls, &nv.v);
-    if (nv.v.k != VINDEXED)
-      check_conflict(ls, lh, &nv.v);
-    checklimit(ls->fs, nvars + ls->L->nCcalls, LUAI_MAXCCALLS,
-                    "C levels");
-    assignment(ls, &nv, nvars+1);
-  }
-  else {  /* assignment -> `=' explist */
-    int nexps;
-    checknext(ls, '=');
-    nexps = explist(ls, &e);
-    if (nexps != nvars) {
-      adjust_assign(ls, nvars, nexps, &e);
-      if (nexps > nvars)
-        ls->fs->freereg -= nexps - nvars;  /* remove extra values */
-    }
-    else {
-      luaK_setoneret(ls->fs, &e);  /* close last expression */
-      luaK_storevar(ls->fs, &lh->v, &e);
-      return;  /* avoid default */
-    }
-  }
-  init_exp(&e, VNONRELOC, ls->fs->freereg-1);  /* default assignment */
-  luaK_storevar(ls->fs, &lh->v, &e);
-}
-
-
 static void test_then_block (LexState *ls, int *escapelist) {
   /* test_then_block -> [IF | ELSEIF] cond THEN block */
   BlockCnt bl;
@@ -1092,11 +1005,7 @@ static void exprstat (LexState *ls) {
   FuncState *fs = ls->fs;
   struct LHS_assign v;
   suffixedexp(ls, &v.v);
-  if (ls->t.token == '=' || ls->t.token == ',') { /* stat -> assignment ? */
-    v.prev = NULL;
-    assignment(ls, &v, 1);
-  }
-  else {  /* stat -> func */
+  {  /* stat -> func */
     check_condition(ls, v.v.k == VCALL, "syntax error");
     SETARG_C(getcode(fs, &v.v), 1);  /* call statement uses no results */
   }
