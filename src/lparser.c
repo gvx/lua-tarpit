@@ -337,104 +337,6 @@ static void enterlevel (LexState *ls) {
 #define leavelevel(ls)	((ls)->L->nCcalls--)
 
 
-static void closegoto (LexState *ls, int g, Labeldesc *label) {
-  int i;
-  FuncState *fs = ls->fs;
-  Labellist *gl = &ls->dyd->gt;
-  Labeldesc *gt = &gl->arr[g];
-  lua_assert(luaS_eqstr(gt->name, label->name));
-  if (gt->nactvar < label->nactvar) {
-    TString *vname = getlocvar(fs, gt->nactvar)->varname;
-    const char *msg = luaO_pushfstring(ls->L,
-      "<goto %s> at line %d jumps into the scope of local " LUA_QS,
-      getstr(gt->name), gt->line, getstr(vname));
-    semerror(ls, msg);
-  }
-  luaK_patchlist(fs, gt->pc, label->pc);
-  /* remove goto from pending list */
-  for (i = g; i < gl->n - 1; i++)
-    gl->arr[i] = gl->arr[i + 1];
-  gl->n--;
-}
-
-
-/*
-** try to close a goto with existing labels; this solves backward jumps
-*/
-static int findlabel (LexState *ls, int g) {
-  int i;
-  BlockCnt *bl = ls->fs->bl;
-  Dyndata *dyd = ls->dyd;
-  Labeldesc *gt = &dyd->gt.arr[g];
-  /* check labels in current block for a match */
-  for (i = bl->firstlabel; i < dyd->label.n; i++) {
-    Labeldesc *lb = &dyd->label.arr[i];
-    if (luaS_eqstr(lb->name, gt->name)) {  /* correct label? */
-      if (gt->nactvar > lb->nactvar &&
-          (bl->upval || dyd->label.n > bl->firstlabel))
-        luaK_patchclose(ls->fs, gt->pc, lb->nactvar);
-      closegoto(ls, g, lb);  /* close it */
-      return 1;
-    }
-  }
-  return 0;  /* label not found; cannot close goto */
-}
-
-
-static int newlabelentry (LexState *ls, Labellist *l, TString *name,
-                          int line, int pc) {
-  int n = l->n;
-  luaM_growvector(ls->L, l->arr, n, l->size,
-                  Labeldesc, SHRT_MAX, "labels/gotos");
-  l->arr[n].name = name;
-  l->arr[n].line = line;
-  l->arr[n].nactvar = ls->fs->nactvar;
-  l->arr[n].pc = pc;
-  l->n++;
-  return n;
-}
-
-
-/*
-** check whether new label 'lb' matches any pending gotos in current
-** block; solves forward jumps
-*/
-static void findgotos (LexState *ls, Labeldesc *lb) {
-  Labellist *gl = &ls->dyd->gt;
-  int i = ls->fs->bl->firstgoto;
-  while (i < gl->n) {
-    if (luaS_eqstr(gl->arr[i].name, lb->name))
-      closegoto(ls, i, lb);
-    else
-      i++;
-  }
-}
-
-
-/*
-** "export" pending gotos to outer level, to check them against
-** outer labels; if the block being exited has upvalues, and
-** the goto exits the scope of any variable (which can be the
-** upvalue), close those variables being exited.
-*/
-static void movegotosout (FuncState *fs, BlockCnt *bl) {
-  int i = bl->firstgoto;
-  Labellist *gl = &fs->ls->dyd->gt;
-  /* correct pending gotos to current block and try to close it
-     with visible labels */
-  while (i < gl->n) {
-    Labeldesc *gt = &gl->arr[i];
-    if (gt->nactvar > bl->nactvar) {
-      if (bl->upval)
-        luaK_patchclose(fs, gt->pc, bl->nactvar);
-      gt->nactvar = bl->nactvar;
-    }
-    if (!findlabel(fs->ls, i))
-      i++;  /* move to next one */
-  }
-}
-
-
 static void enterblock (FuncState *fs, BlockCnt *bl, lu_byte isloop) {
   bl->isloop = isloop;
   bl->nactvar = fs->nactvar;
@@ -446,15 +348,6 @@ static void enterblock (FuncState *fs, BlockCnt *bl, lu_byte isloop) {
   lua_assert(fs->freereg == fs->nactvar);
 }
 
-
-/*
-** create a label named "break" to resolve break statements
-*/
-static void breaklabel (LexState *ls) {
-  TString *n = luaS_new(ls->L, "break");
-  int l = newlabelentry(ls, &ls->dyd->label, n, 0, ls->fs->pc);
-  findgotos(ls, &ls->dyd->label.arr[l]);
-}
 
 /*
 ** generates an error for an undefined 'goto'; choose appropriate
@@ -478,17 +371,11 @@ static void leaveblock (FuncState *fs) {
     luaK_patchclose(fs, j, bl->nactvar);
     luaK_patchtohere(fs, j);
   }
-  if (bl->isloop)
-    breaklabel(ls);  /* close pending breaks */
   fs->bl = bl->previous;
   removevars(fs, bl->nactvar);
   lua_assert(bl->nactvar == fs->nactvar);
   fs->freereg = fs->nactvar;  /* free registers */
   ls->dyd->label.n = bl->firstlabel;  /* remove local labels */
-  if (bl->previous)  /* inner block? */
-    movegotosout(fs, bl);  /* update pending gotos to outer block */
-  else if (bl->firstgoto < ls->dyd->gt.n)  /* pending gotos in outer block? */
-    undefgoto(ls, &ls->dyd->gt.arr[bl->firstgoto]);  /* error */
 }
 
 
@@ -1163,60 +1050,6 @@ static void assignment (LexState *ls, struct LHS_assign *lh, int nvars) {
 }
 
 
-static void gotostat (LexState *ls, int pc) {
-  int line = ls->linenumber;
-  TString *label;
-  int g;
-  if (testnext(ls, TK_GOTO))
-    label = str_checkname(ls);
-  else {
-    luaX_next(ls);  /* skip break */
-    label = luaS_new(ls->L, "break");
-  }
-  g = newlabelentry(ls, &ls->dyd->gt, label, line, pc);
-  findlabel(ls, g);  /* close it if label already defined */
-}
-
-
-/* check for repeated labels on the same block */
-static void checkrepeated (FuncState *fs, Labellist *ll, TString *label) {
-  int i;
-  for (i = fs->bl->firstlabel; i < ll->n; i++) {
-    if (luaS_eqstr(label, ll->arr[i].name)) {
-      const char *msg = luaO_pushfstring(fs->ls->L,
-                          "label " LUA_QS " already defined on line %d",
-                          getstr(label), ll->arr[i].line);
-      semerror(fs->ls, msg);
-    }
-  }
-}
-
-
-/* skip no-op statements */
-static void skipnoopstat (LexState *ls) {
-  while (ls->t.token == ';' || ls->t.token == TK_DBCOLON)
-    statement(ls);
-}
-
-
-static void labelstat (LexState *ls, TString *label, int line) {
-  /* label -> '::' NAME '::' */
-  FuncState *fs = ls->fs;
-  Labellist *ll = &ls->dyd->label;
-  int l;  /* index of new label being created */
-  checkrepeated(fs, ll, label);  /* check for repeated labels */
-  checknext(ls, TK_DBCOLON);  /* skip double colon */
-  /* create new entry for this label */
-  l = newlabelentry(ls, ll, label, line, fs->pc);
-  skipnoopstat(ls);  /* skip other no-op statements */
-  if (block_follow(ls, 0)) {  /* label is last no-op statement in the block? */
-    /* assume that locals are already out of scope */
-    ll->arr[l].nactvar = fs->bl->nactvar;
-  }
-  findgotos(ls, &ll->arr[l]);
-}
-
-
 static void test_then_block (LexState *ls, int *escapelist) {
   /* test_then_block -> [IF | ELSEIF] cond THEN block */
   BlockCnt bl;
@@ -1226,19 +1059,7 @@ static void test_then_block (LexState *ls, int *escapelist) {
   luaX_next(ls);  /* skip IF or ELSEIF */
   expr(ls, &v);  /* read condition */
   checknext(ls, TK_THEN);
-  if (ls->t.token == TK_GOTO || ls->t.token == TK_BREAK) {
-    luaK_goiffalse(ls->fs, &v);  /* will jump to label if condition is true */
-    enterblock(fs, &bl, 0);  /* must enter block before 'goto' */
-    gotostat(ls, v.t);  /* handle goto/break */
-    skipnoopstat(ls);  /* skip other no-op statements */
-    if (block_follow(ls, 0)) {  /* 'goto' is the entire block? */
-      leaveblock(fs);
-      return;  /* and that is it */
-    }
-    else  /* must skip over 'then' part if condition is false */
-      jf = luaK_jump(fs);
-  }
-  else {  /* regular case (not goto/break) */
+  {  /* regular case (not goto/break) */
     luaK_goiftrue(ls->fs, &v);  /* skip over block if condition is false */
     enterblock(fs, &bl, 0);
     jf = v.f;
@@ -1333,19 +1154,9 @@ static void statement (LexState *ls) {
       check_match(ls, TK_END, TK_DO, line);
       break;
     }
-    case TK_DBCOLON: {  /* stat -> label */
-      luaX_next(ls);  /* skip double colon */
-      labelstat(ls, str_checkname(ls), line);
-      break;
-    }
     case TK_RETURN: {  /* stat -> retstat */
       luaX_next(ls);  /* skip RETURN */
       retstat(ls);
-      break;
-    }
-    case TK_BREAK:   /* stat -> breakstat */
-    case TK_GOTO: {  /* stat -> 'goto' NAME */
-      gotostat(ls, luaK_jump(ls->fs));
       break;
     }
     default: {  /* stat -> func | assignment */
