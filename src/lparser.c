@@ -1266,32 +1266,6 @@ static void ifstat (LexState *ls, int line) {
 }
 
 
-static int funcname (LexState *ls, expdesc *v) {
-  /* funcname -> NAME {fieldsel} [`:' NAME] */
-  int ismethod = 0;
-  singlevar(ls, v);
-  while (ls->t.token == '.')
-    fieldsel(ls, v);
-  if (ls->t.token == ':') {
-    ismethod = 1;
-    fieldsel(ls, v);
-  }
-  return ismethod;
-}
-
-
-static void funcstat (LexState *ls, int line) {
-  /* funcstat -> FUNCTION funcname body */
-  int ismethod;
-  expdesc v, b;
-  luaX_next(ls);  /* skip FUNCTION */
-  ismethod = funcname(ls, &v);
-  body(ls, &b, ismethod, line);
-  luaK_storevar(ls->fs, &v, &b);
-  luaK_fixline(ls->fs, line);  /* definition `happens' in the first line */
-}
-
-
 static void exprstat (LexState *ls) {
   /* stat -> func | assignment */
   FuncState *fs = ls->fs;
@@ -1357,10 +1331,6 @@ static void statement (LexState *ls) {
       luaX_next(ls);  /* skip DO */
       block(ls);
       check_match(ls, TK_END, TK_DO, line);
-      break;
-    }
-    case TK_FUNCTION: {  /* stat -> funcstat */
-      funcstat(ls, line);
       break;
     }
     case TK_DBCOLON: {  /* stat -> label */
