@@ -1163,16 +1163,6 @@ static void assignment (LexState *ls, struct LHS_assign *lh, int nvars) {
 }
 
 
-static int cond (LexState *ls) {
-  /* cond -> exp */
-  expdesc v;
-  expr(ls, &v);  /* read condition */
-  if (v.k == VNIL) v.k = VFALSE;  /* `falses' are all equal here */
-  luaK_goiftrue(ls->fs, &v);
-  return v.f;
-}
-
-
 static void gotostat (LexState *ls, int pc) {
   int line = ls->linenumber;
   TString *label;
@@ -1224,25 +1214,6 @@ static void labelstat (LexState *ls, TString *label, int line) {
     ll->arr[l].nactvar = fs->bl->nactvar;
   }
   findgotos(ls, &ll->arr[l]);
-}
-
-
-static void whilestat (LexState *ls, int line) {
-  /* whilestat -> WHILE cond DO block END */
-  FuncState *fs = ls->fs;
-  int whileinit;
-  int condexit;
-  BlockCnt bl;
-  luaX_next(ls);  /* skip WHILE */
-  whileinit = luaK_getlabel(fs);
-  condexit = cond(ls);
-  enterblock(fs, &bl, 1);
-  checknext(ls, TK_DO);
-  block(ls);
-  luaK_jumpto(fs, whileinit);
-  check_match(ls, TK_END, TK_WHILE, line);
-  leaveblock(fs);
-  luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
 }
 
 
@@ -1380,10 +1351,6 @@ static void statement (LexState *ls) {
     }
     case TK_IF: {  /* stat -> ifstat */
       ifstat(ls, line);
-      break;
-    }
-    case TK_WHILE: {  /* stat -> whilestat */
-      whilestat(ls, line);
       break;
     }
     case TK_DO: {  /* stat -> DO block END */
