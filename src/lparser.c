@@ -1245,27 +1245,6 @@ static void whilestat (LexState *ls, int line) {
   luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
 }
 
-
-static void repeatstat (LexState *ls, int line) {
-  /* repeatstat -> REPEAT block UNTIL cond */
-  int condexit;
-  FuncState *fs = ls->fs;
-  int repeat_init = luaK_getlabel(fs);
-  BlockCnt bl1, bl2;
-  enterblock(fs, &bl1, 1);  /* loop block */
-  enterblock(fs, &bl2, 0);  /* scope block */
-  luaX_next(ls);  /* skip REPEAT */
-  statlist(ls);
-  check_match(ls, TK_UNTIL, TK_REPEAT, line);
-  condexit = cond(ls);  /* read condition (inside scope block) */
-  if (bl2.upval)  /* upvalues? */
-    luaK_patchclose(fs, condexit, bl2.nactvar);
-  leaveblock(fs);  /* finish scope */
-  luaK_patchlist(fs, condexit, repeat_init);  /* close the loop */
-  leaveblock(fs);  /* finish loop */
-}
-
-
 static int exp1 (LexState *ls) {
   expdesc e;
   int reg;
@@ -1547,10 +1526,6 @@ static void statement (LexState *ls) {
     }
     case TK_FOR: {  /* stat -> forstat */
       forstat(ls, line);
-      break;
-    }
-    case TK_REPEAT: {  /* stat -> repeatstat */
-      repeatstat(ls, line);
       break;
     }
     case TK_FUNCTION: {  /* stat -> funcstat */
