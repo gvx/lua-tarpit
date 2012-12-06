@@ -1245,16 +1245,6 @@ static void whilestat (LexState *ls, int line) {
   luaK_patchtohere(fs, condexit);  /* false conditions finish the loop */
 }
 
-static int exp1 (LexState *ls) {
-  expdesc e;
-  int reg;
-  expr(ls, &e);
-  luaK_exp2nextreg(ls->fs, &e);
-  lua_assert(e.k == VNONRELOC);
-  reg = e.u.info;
-  return reg;
-}
-
 
 static void test_then_block (LexState *ls, int *escapelist) {
   /* test_then_block -> [IF | ELSEIF] cond THEN block */
@@ -1302,37 +1292,6 @@ static void ifstat (LexState *ls, int line) {
     block(ls);  /* `else' part */
   check_match(ls, TK_END, TK_IF, line);
   luaK_patchtohere(fs, escapelist);  /* patch escape list to 'if' end */
-}
-
-
-static void localfunc (LexState *ls) {
-  expdesc b;
-  FuncState *fs = ls->fs;
-  new_localvar(ls, str_checkname(ls));  /* new local variable */
-  adjustlocalvars(ls, 1);  /* enter its scope */
-  body(ls, &b, 0, ls->linenumber);  /* function created in next register */
-  /* debug information will only see the variable after this point! */
-  getlocvar(fs, b.u.info)->startpc = fs->pc;
-}
-
-
-static void localstat (LexState *ls) {
-  /* stat -> LOCAL NAME {`,' NAME} [`=' explist] */
-  int nvars = 0;
-  int nexps;
-  expdesc e;
-  do {
-    new_localvar(ls, str_checkname(ls));
-    nvars++;
-  } while (testnext(ls, ','));
-  if (testnext(ls, '='))
-    nexps = explist(ls, &e);
-  else {
-    e.k = VVOID;
-    nexps = 0;
-  }
-  adjust_assign(ls, nvars, nexps, &e);
-  adjustlocalvars(ls, nvars);
 }
 
 
@@ -1435,14 +1394,6 @@ static void statement (LexState *ls) {
     }
     case TK_FUNCTION: {  /* stat -> funcstat */
       funcstat(ls, line);
-      break;
-    }
-    case TK_LOCAL: {  /* stat -> localstat */
-      luaX_next(ls);  /* skip LOCAL */
-      if (testnext(ls, TK_FUNCTION))  /* local function? */
-        localfunc(ls);
-      else
-        localstat(ls);
       break;
     }
     case TK_DBCOLON: {  /* stat -> label */
